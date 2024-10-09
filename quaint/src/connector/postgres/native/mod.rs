@@ -48,6 +48,7 @@ impl Debug for PostgresClient {
 pub struct PostgreSql {
     client: PostgresClient,
     pg_bouncer: bool,
+    rds_proxy: bool,
     socket_timeout: Option<Duration>,
     statement_cache: Mutex<LruCache<String, Statement>>,
     is_healthy: AtomicBool,
@@ -122,7 +123,10 @@ impl SslParams {
 
 impl PostgresUrl {
     pub(crate) fn cache(&self) -> LruCache<String, Statement> {
-        if self.query_params.pg_bouncer {
+        if self.query_params.rds_proxy {
+            // RDS proxy supports statement caching as of Nov 2023: https://aws.amazon.com/blogs/database/amazon-rds-proxy-multiplexing-support-for-postgresql-extended-query-protocol/
+            LruCache::new(self.query_params.statement_cache_size)
+        } else if self.query_params.pg_bouncer {
             LruCache::new(0)
         } else {
             LruCache::new(self.query_params.statement_cache_size)
@@ -162,7 +166,8 @@ impl PostgresUrl {
         config.host(self.host());
         config.port(self.port());
         config.dbname(self.dbname());
-        config.pgbouncer_mode(self.query_params.pg_bouncer);
+        // rust-postgres' pgbouncer_mode only explictly disables internal statement caching for enum and other custom types. This is necessary with PGBouncer so DEALLOCATE ALL doesn't break things. If the user asked to disable statement cache altogether, we request the same of the rust-postgres type cache.
+        config.pgbouncer_mode(self.query_params.pg_bouncer || self.query_params.statement_cache_size == 0);
 
         if let Some(options) = self.options() {
             config.options(options);
@@ -218,7 +223,7 @@ impl PostgreSql {
             }
         }));
 
-        // On Postgres, we set the SEARCH_PATH and client-encoding through client connection parameters to save a network roundtrip on connection.
+        // On Postgres, we set the SEARCH_PATH and client-encoding through client connection parameters, when possible, to save a network roundtrip on connection. In unsupported cases like PGBouncer, we fallback to a simple SET query here.
         // We can't always do it for CockroachDB because it does not expect quotes for unsafe identifiers (https://github.com/cockroachdb/cockroach/issues/101328), which might change once the issue is fixed.
         // To circumvent that problem, we only set the SEARCH_PATH through client connection parameters for Cockroach when the identifier is safe, so that the quoting does not matter.
         // Finally, to ensure backward compatibility, we keep sending a database query in case the flavour is set to Unknown.
@@ -242,6 +247,7 @@ impl PostgreSql {
             client: PostgresClient(client),
             socket_timeout: url.query_params.socket_timeout,
             pg_bouncer: url.query_params.pg_bouncer,
+            rds_proxy: url.query_params.rds_proxy,
             statement_cache: Mutex::new(url.cache()),
             is_healthy: AtomicBool::new(true),
         })
@@ -503,7 +509,11 @@ impl Queryable for PostgreSql {
     }
 
     async fn server_reset_query(&self, tx: &dyn Transaction) -> crate::Result<()> {
-        if self.pg_bouncer && false { // disable for rds proxy to avoid connection pinning
+        if self.rds_proxy {
+            // Sending DEALLOCATE ALL to RDS proxy will force connection-pinning: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy-pinning.html#rds-proxy-pinning.postgres
+            // It is also unnecessary as RDS supports statement caching. Further, `server_reset_query = DEALLOCATE ALL` is a pgbouncer-specific hack. See https://github.com/prisma/prisma-engines/commit/ccf54b230bea8dd3e1d005f3a8b6c3150db4e62e and https://github.com/sfackler/rust-postgres/commit/100e4cf
+            Ok(())
+        } else if self.pg_bouncer {
             tx.raw_cmd("DEALLOCATE ALL").await
         } else {
             Ok(())
