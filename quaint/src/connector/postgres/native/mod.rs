@@ -513,7 +513,7 @@ impl Queryable for PostgreSql {
             // Sending DEALLOCATE ALL to RDS proxy will force connection-pinning: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/rds-proxy-pinning.html#rds-proxy-pinning.postgres
             // It is also unnecessary as RDS supports statement caching. Further, `server_reset_query = DEALLOCATE ALL` is a pgbouncer-specific hack. See https://github.com/prisma/prisma-engines/commit/ccf54b230bea8dd3e1d005f3a8b6c3150db4e62e and https://github.com/sfackler/rust-postgres/commit/100e4cf
             Ok(())
-        } else if self.pg_bouncer {
+        } else if self.pg_bouncer && false {
             tx.raw_cmd("DEALLOCATE ALL").await
         } else {
             Ok(())
