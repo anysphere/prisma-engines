@@ -503,7 +503,7 @@ impl Queryable for PostgreSql {
     }
 
     async fn server_reset_query(&self, tx: &dyn Transaction) -> crate::Result<()> {
-        if self.pg_bouncer {
+        if self.pg_bouncer && false { // disable for rds proxy to avoid connection pinning
             tx.raw_cmd("DEALLOCATE ALL").await
         } else {
             Ok(())
