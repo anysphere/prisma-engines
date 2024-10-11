@@ -36,7 +36,7 @@ impl<Q: Queryable + ?Sized> QueryExt for Q {
                 Query::Select(Box::from(x.comment(trace_parent_to_string(span_ctx))))
             }
             // This is part of the required changes to pass a traceid
-            (Query::Select(x), trace_id) => Query::Select(Box::from(x.add_trace_id(trace_id))),
+            (Query::Select(x), _) => Query::Select(Box::from(x.add_trace_id(ctx))),
             (q, _) => q,
         };
 
@@ -134,7 +134,7 @@ impl<Q: Queryable + ?Sized> QueryExt for Q {
         let select = Select::from_table(model.as_table(ctx))
             .columns(id_cols)
             .append_trace(&Span::current())
-            .add_trace_id(ctx.trace_id)
+            .add_trace_id(ctx)
             .so_that(condition);
 
         self.select_ids(select, model_id, ctx).await
