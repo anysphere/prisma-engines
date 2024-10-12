@@ -28,4 +28,12 @@ impl<'a> Context<'a> {
     pub(crate) fn schema_name(&self) -> &str {
         self.connection_info.schema_name()
     }
+
+    pub(crate) fn dbname(&self) -> Option<&str> {
+        self.connection_info.dbname()
+    }
+
+    pub(crate) fn db_host(&self) -> &str {
+        self.connection_info.host()
+    }
 }
