@@ -15,7 +15,13 @@ fn get_env() -> &'static str {
 }
 
 fn get_service() -> &'static str {
-    SERVICE.get_or_init(|| std::env::var("DD_SERVICE").unwrap_or_else(|_| "development".to_string()))
+    SERVICE.get_or_init(|| {
+        std::env::var("APP_SERVICE_NAME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("DD_SERVICE").ok())
+            .unwrap_or_else(|| "development".to_string())
+    })
 }
 
 fn get_version() -> &'static str {
@@ -30,9 +36,9 @@ fn get_dd_tag_string(ctx: &Context<'_>) -> String {
     let db_host = ctx.db_host();
     // We don't want to thread the database_service through the prisma client and prisma engine,
     // so we just hard code our known databases here and infer the db service name from the host.
-    let database_service = if db_host.contains("main-db") {
+    let database_service = if db_host.contains("main-db") || db_host.contains("maindb") {
         "main-db"
-    } else if db_host.contains("analytics-db") {
+    } else if db_host.contains("analytics-db") || db_host.contains("analyticsdb") {
         "analytics-db"
     } else if db_host.contains("codebase-aurora") {
         "codebase-db"
@@ -44,8 +50,9 @@ fn get_dd_tag_string(ctx: &Context<'_>) -> String {
     let env = get_env();
     let parent_service = get_service();
     let parent_version = get_version();
-    return format!("dddb='{}',dddbs='{}',dde='{}',ddh='{}',ddps='{}',ddpv='{}'",
-        dbname, database_service, db_host, env, parent_service, parent_version)
+    return format!(
+        "dddb='{dbname}',dddbs='{database_service}',dde='{env}',ddh='{db_host}',ddps='{parent_service}',ddpv='{parent_version}'"
+    )
 }
 
 
