@@ -231,11 +231,6 @@ pub trait Visitor<'a> {
 
     /// A walk through a `SELECT` statement
     fn visit_select(&mut self, select: Select<'a>) -> Result {
-        if let Some(comment) = select.comment {
-            self.visit_comment(comment)?;
-            self.write(" ")?;
-        }
-
         let number_of_ctes = select.ctes.len();
 
         if number_of_ctes > 0 {
@@ -354,16 +349,16 @@ pub trait Visitor<'a> {
             self.visit_columns(select.columns)?;
         }
 
+        if let Some(comment) = select.comment {
+            self.write(" ")?;
+            self.visit_comment(comment)?;
+        }
+
         Ok(())
     }
 
     /// A walk through an `UPDATE` statement
     fn visit_update(&mut self, update: Update<'a>) -> Result {
-        if let Some(comment) = update.comment {
-            self.visit_comment(comment)?;
-            self.write(" ")?;
-        }
-
         self.write("UPDATE ")?;
         self.visit_table(update.table, true)?;
 
@@ -394,6 +389,11 @@ pub trait Visitor<'a> {
                 self.write(" RETURNING ")?;
                 self.visit_columns(values)?;
             }
+        }
+
+        if let Some(comment) = update.comment {
+            self.write(" ")?;
+            self.visit_comment(comment)?;
         }
 
         Ok(())
@@ -432,17 +432,17 @@ pub trait Visitor<'a> {
 
     /// A walk through an `DELETE` statement
     fn visit_delete(&mut self, delete: Delete<'a>) -> Result {
-        if let Some(comment) = delete.comment {
-            self.visit_comment(comment)?;
-            self.write(" ")?;
-        }
-
         self.write("DELETE FROM ")?;
         self.visit_table(delete.table, true)?;
 
         if let Some(conditions) = delete.conditions {
             self.write(" WHERE ")?;
             self.visit_conditions(conditions)?;
+        }
+
+        if let Some(comment) = delete.comment {
+            self.write(" ")?;
+            self.visit_comment(comment)?;
         }
 
         Ok(())
