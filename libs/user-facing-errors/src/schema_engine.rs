@@ -19,6 +19,7 @@ pub struct DestructiveMigrationDetected {
     pub destructive_details: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, UserFacingError, Serialize)]
 #[user_facing(
     code = "P3002",
