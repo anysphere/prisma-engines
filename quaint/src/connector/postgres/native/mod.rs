@@ -21,7 +21,6 @@ use lru_cache::LruCache;
 use native_tls::{Certificate, Identity, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
 use std::{
-    borrow::Borrow,
     fmt::{Debug, Display},
     fs,
     future::Future,
@@ -162,8 +161,8 @@ impl PostgresUrl {
     pub(crate) fn to_config(&self) -> Config {
         let mut config = Config::new();
 
-        config.user(self.username().borrow());
-        config.password(self.password().borrow() as &str);
+        config.user(self.username().as_ref());
+        config.password(self.password().as_ref());
         config.host(self.host());
         config.port(self.port());
         config.dbname(self.dbname());
