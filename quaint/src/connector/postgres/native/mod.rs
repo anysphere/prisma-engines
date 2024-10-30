@@ -22,6 +22,7 @@ use futures::{future::FutureExt, lock::Mutex};
 use lru_cache::LruCache;
 use native_tls::{Certificate, Identity, TlsConnector};
 use postgres_native_tls::MakeTlsConnector;
+use postgres_types::{Type as PostgresType, ToSql};
 use std::{
     fmt::{Debug, Display},
     fs,
@@ -359,72 +360,97 @@ impl Queryable for PostgreSql {
     async fn query_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<ResultSet> {
         self.check_bind_variables_len(params)?;
 
-        metrics::query("postgres.query_raw", sql, params, move || async move {
-            let stmt = self.fetch_cached(sql, &[]).await?;
+        metrics::query(
+            "postgres.query_raw",
+            sql,
+            params,
+            move || async move {
+                let converted_params = conversion::conv_params(params);
+                let param_types = conversion::params_to_types(params);
+                let params_with_types: Vec<(&(dyn ToSql + Sync), PostgresType)> = converted_params
+                    .iter()
+                    .zip(param_types)
+                    .map(|(value, ty)| (*value as &(dyn ToSql + Sync), ty))
+                    .collect();
 
-            if stmt.params().len() != params.len() {
-                let kind = ErrorKind::IncorrectNumberOfParameters {
-                    expected: stmt.params().len(),
-                    actual: params.len(),
+                // Execute the query using `query_typed`
+                let rows = self
+                    .perform_io(self.client.0.query_typed(sql, params_with_types.as_slice()))
+                    .await?;
+
+                // Extract column information from the first row, if available
+                let (col_types, column_names) = if let Some(row) = rows.first() {
+                    let columns = row.columns();
+                    let col_types = columns
+                        .iter()
+                        .map(|c| PGColumnType::from_pg_type(c.type_()))
+                        .map(ColumnType::from)
+                        .collect::<Vec<_>>();
+                    let column_names = columns.iter().map(|c| c.name().to_string()).collect();
+
+                    (col_types, column_names)
+                } else {
+                    (Vec::new(), Vec::new())
                 };
 
-                return Err(Error::builder(kind).build());
-            }
+                let mut result = ResultSet::new(column_names, col_types, Vec::new());
 
-            let rows = self
-                .perform_io(self.client.0.query(&stmt, conversion::conv_params(params).as_slice()))
-                .await?;
+                // Process each row in the result set
+                for row in rows {
+                    result.rows.push(row.get_result_row()?);
+                }
 
-            let col_types = stmt
-                .columns()
-                .iter()
-                .map(|c| PGColumnType::from_pg_type(c.type_()))
-                .map(ColumnType::from)
-                .collect::<Vec<_>>();
-            let mut result = ResultSet::new(stmt.to_column_names(), col_types, Vec::new());
-
-            for row in rows {
-                result.rows.push(row.get_result_row()?);
-            }
-
-            Ok(result)
-        })
+                Ok(result)
+            },
+        )
         .await
     }
 
     async fn query_raw_typed(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<ResultSet> {
         self.check_bind_variables_len(params)?;
 
-        metrics::query("postgres.query_raw", sql, params, move || async move {
-            let stmt = self.fetch_cached(sql, params).await?;
+        metrics::query(
+            "postgres.query_raw",
+            sql,
+            params,
+            move || async move {
+                let converted_params = conversion::conv_params(params);
+                let param_types = conversion::params_to_types(params);
+                let params_with_types: Vec<(&(dyn ToSql + Sync), PostgresType)> = converted_params
+                    .iter()
+                    .zip(param_types)
+                    .map(|(value, ty)| (*value as &(dyn ToSql + Sync), ty))
+                    .collect();
 
-            if stmt.params().len() != params.len() {
-                let kind = ErrorKind::IncorrectNumberOfParameters {
-                    expected: stmt.params().len(),
-                    actual: params.len(),
+                // Execute the query using `query_typed`
+                let rows = self
+                    .perform_io(self.client.0.query_typed(sql, params_with_types.as_slice()))
+                    .await?;
+
+                // Extract column information from the first row, if available
+                let (col_types, column_names) = if let Some(row) = rows.first() {
+                    let columns = row.columns();
+                    let col_types = columns
+                        .iter()
+                        .map(|c| PGColumnType::from_pg_type(c.type_()))
+                        .map(ColumnType::from)
+                        .collect::<Vec<_>>();
+                    let column_names = columns.iter().map(|c| c.name().to_string()).collect();
+
+                    (col_types, column_names)
+                } else {
+                    (Vec::new(), Vec::new())
                 };
 
-                return Err(Error::builder(kind).build());
-            }
+                let mut result = ResultSet::new(column_names, col_types, Vec::new());
 
-            let col_types = stmt
-                .columns()
-                .iter()
-                .map(|c| PGColumnType::from_pg_type(c.type_()))
-                .map(ColumnType::from)
-                .collect::<Vec<_>>();
-            let rows = self
-                .perform_io(self.client.0.query(&stmt, conversion::conv_params(params).as_slice()))
-                .await?;
+                for row in rows {
+                    result.rows.push(row.get_result_row()?);
+                }
 
-            let mut result = ResultSet::new(stmt.to_column_names(), col_types, Vec::new());
-
-            for row in rows {
-                result.rows.push(row.get_result_row()?);
-            }
-
-            Ok(result)
-        })
+                Ok(result)
+            },
+        )
         .await
     }
 
@@ -437,48 +463,66 @@ impl Queryable for PostgreSql {
     async fn execute_raw(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<u64> {
         self.check_bind_variables_len(params)?;
 
-        metrics::query("postgres.execute_raw", sql, params, move || async move {
-            let stmt = self.fetch_cached(sql, &[]).await?;
+        metrics::query(
+            "postgres.execute_raw",
+            sql,
+            params,
+            move || async move {
+                let converted_params = conversion::conv_params(params);
+                let param_types = conversion::params_to_types(params);
+                let params_with_types: Vec<(&(dyn ToSql + Sync), PostgresType)> = converted_params
+                    .iter()
+                    .zip(param_types)
+                    .map(|(value, ty)| (*value as &(dyn ToSql + Sync), ty))
+                    .collect();
 
-            if stmt.params().len() != params.len() {
-                let kind = ErrorKind::IncorrectNumberOfParameters {
-                    expected: stmt.params().len(),
-                    actual: params.len(),
-                };
+                let changes = self
+                    .perform_io(self.client.0.query_typed_raw::<&(dyn ToSql + Sync), _>(
+                        sql,
+                        params_with_types.as_slice().iter()
+                            .map(|(v, t)| (*v, t.clone()))
+                            .collect::<Vec<_>>()
+                    ))
+                    .await?
+                    .rows_affected()
+                    .unwrap_or(0);
 
-                return Err(Error::builder(kind).build());
-            }
-
-            let changes = self
-                .perform_io(self.client.0.execute(&stmt, conversion::conv_params(params).as_slice()))
-                .await?;
-
-            Ok(changes)
-        })
+                Ok(changes)
+            },
+        )
         .await
     }
 
     async fn execute_raw_typed(&self, sql: &str, params: &[Value<'_>]) -> crate::Result<u64> {
         self.check_bind_variables_len(params)?;
 
-        metrics::query("postgres.execute_raw", sql, params, move || async move {
-            let stmt = self.fetch_cached(sql, params).await?;
+        metrics::query(
+            "postgres.execute_raw",
+            sql,
+            params,
+            move || async move {
+                let converted_params = conversion::conv_params(params);
+                let param_types = conversion::params_to_types(params);
+                let params_with_types: Vec<(&(dyn ToSql + Sync), PostgresType)> = converted_params
+                    .iter()
+                    .zip(param_types)
+                    .map(|(value, ty)| (*value as &(dyn ToSql + Sync), ty))
+                    .collect();
 
-            if stmt.params().len() != params.len() {
-                let kind = ErrorKind::IncorrectNumberOfParameters {
-                    expected: stmt.params().len(),
-                    actual: params.len(),
-                };
+                let changes = self
+                    .perform_io(self.client.0.query_typed_raw::<&(dyn ToSql + Sync), _>(
+                        sql,
+                        params_with_types.as_slice().iter()
+                            .map(|(v, t)| (*v, t.clone()))
+                            .collect::<Vec<_>>()
+                    ))
+                    .await?
+                    .rows_affected()
+                    .unwrap_or(0);
 
-                return Err(Error::builder(kind).build());
-            }
-
-            let changes = self
-                .perform_io(self.client.0.execute(&stmt, conversion::conv_params(params).as_slice()))
-                .await?;
-
-            Ok(changes)
-        })
+                Ok(changes)
+            },
+        )
         .await
     }
 
