@@ -1,8 +1,60 @@
 use opentelemetry::trace::{SpanContext, TraceContextExt, TraceFlags};
 use quaint::ast::{Delete, Insert, Select, Update};
-use telemetry::helpers::TraceParent;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use crate::Context;
+use std::sync::OnceLock;
+
+static ENV: OnceLock<String> = OnceLock::new();
+static SERVICE: OnceLock<String> = OnceLock::new();
+static VERSION: OnceLock<String> = OnceLock::new();
+
+// We assume that if the relevant env vars aren't set, we must be running locally
+fn get_env() -> &'static str {
+    ENV.get_or_init(|| std::env::var("DD_ENV").unwrap_or_else(|_| "development".to_string()))
+}
+
+fn get_service() -> &'static str {
+    SERVICE.get_or_init(|| {
+        std::env::var("APP_SERVICE_NAME")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("DD_SERVICE").ok())
+            .unwrap_or_else(|| "development".to_string())
+    })
+}
+
+fn get_version() -> &'static str {
+    VERSION.get_or_init(|| std::env::var("DD_VERSION").unwrap_or_else(|_| "development".to_string()))
+}
+
+fn get_dd_tag_string(ctx: &Context<'_>) -> String {
+    // Prisma doesn't support datadog dbm tags in the query comments, so we've added them here.
+    // See https://github.com/DataDog/dd-trace-js/blob/master/packages/dd-trace/src/plugins/database.js#L31
+    // for the tags that are used by the postgres datadog plugin as an example.
+    let dbname = ctx.dbname().unwrap_or("unknown");
+    let db_host = ctx.db_host();
+    // We don't want to thread the database_service through the prisma client and prisma engine,
+    // so we just hard code our known databases here and infer the db service name from the host.
+    let database_service = if db_host.contains("main-db") || db_host.contains("maindb") {
+        "main-db"
+    } else if db_host.contains("analytics-db") || db_host.contains("analyticsdb") {
+        "analytics-db"
+    } else if db_host.contains("codebase-aurora") {
+        "codebase-db"
+    } else if db_host.contains("mysql-db") {
+        "mysql-db"
+    } else {
+        "unknown"
+    };
+    let env = get_env();
+    let parent_service = get_service();
+    let parent_version = get_version();
+    return format!(
+        "dddb='{dbname}',dddbs='{database_service}',dde='{env}',ddh='{db_host}',ddps='{parent_service}',ddpv='{parent_version}'"
+    )
+}
+
 
 pub fn trace_parent_to_string(context: &SpanContext) -> String {
     let trace_id = context.trace_id();
@@ -14,7 +66,7 @@ pub fn trace_parent_to_string(context: &SpanContext) -> String {
 
 pub trait SqlTraceComment: Sized {
     fn append_trace(self, span: &Span) -> Self;
-    fn add_traceparent(self, traceparent: Option<TraceParent>) -> Self;
+    fn add_traceparent(self, ctx: &Context<'_>) -> Self;
 }
 
 macro_rules! sql_trace {
@@ -33,15 +85,17 @@ macro_rules! sql_trace {
             }
 
             // Temporary method to pass the traceid in an operation
-            fn add_traceparent(self, traceparent: Option<TraceParent>) -> Self {
-                let Some(traceparent) = traceparent else {
-                    return self;
+            fn add_traceparent(self, ctx: &Context<'_>) -> Self {
+                // Always add the dd tags so we at least get service info, even if there's not an active trace.
+                let dd_tag_string = get_dd_tag_string(ctx);
+                let Some(traceparent) = ctx.traceparent else {
+                    return self.comment(dd_tag_string);
                 };
 
                 if traceparent.sampled() {
-                    self.comment(format!("traceparent='{traceparent}'"))
+                    self.comment(format!("{dd_tag_string},traceparent='{traceparent}'"))
                 } else {
-                    self
+                    self.comment(dd_tag_string)
                 }
             }
         }
